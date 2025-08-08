@@ -8,36 +8,48 @@ PBW_HTML = """
 <!doctype html>
 <html lang="en">
 <head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>PureBloomWorld</title>
+  <meta name="description" content="Curated products & ideas in Health, Lifestyle, Tech and Eco — powered by AI." />
   <style>
     :root{
-      --bg:#0f172a; --card:#111827; --muted:#94a3b8; --text:#e5e7eb;
-      --brand:#22c55e; --brand-2:#10b981; --accent:#38bdf8;
+      --bg:#0f172a; --panel:#0b1227; --border:#1f2937;
+      --muted:#94a3b8; --text:#e5e7eb;
+      --brand:#22c55e; --brand2:#10b981; --accent:#38bdf8;
     }
     *{box-sizing:border-box}
-    body{margin:0;font-family:ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,"Helvetica Neue",Arial;
-      background:linear-gradient(180deg,var(--bg),#0b1023 60%, #0a0f1f);color:var(--text)}
-    .wrap{max-width:1100px;margin:0 auto;padding:24px}
-    header{display:flex;align-items:center;justify-content:space-between;gap:12px}
-    .logo{display:flex;align-items:center;gap:10px;font-weight:800;letter-spacing:.3px}
-    .logo .leaf{width:28px;height:28px;border-radius:8px;background:radial-gradient(circle at 30% 30%, var(--brand), var(--brand-2));display:grid;place-items:center;color:#052e16;font-weight:900}
+    body{
+      margin:0; font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, "Helvetica Neue", Arial;
+      background:linear-gradient(180deg,var(--bg),#0b1023 60%, #0a0f1f);
+      color:var(--text);
+    }
+    a{color:inherit}
+    .wrap{max-width:1100px;margin:0 auto;padding:22px}
+    header{display:flex;align-items:center;justify-content:space-between;gap:10px}
+    .logo{display:flex;align-items:center;gap:10px;font-weight:800;letter-spacing:.2px}
+    .leaf{width:28px;height:28px;border-radius:8px;background:radial-gradient(circle at 30% 30%, var(--brand), var(--brand2));display:grid;place-items:center;color:#052e16;font-weight:900}
     nav a{color:var(--muted);text-decoration:none;margin-left:14px;font-weight:600}
     nav a:hover{color:var(--text)}
-    .hero{margin:42px 0;padding:28px;border:1px solid #1f2937;background:linear-gradient(180deg,#0b1227,#0a1324);border-radius:18px}
-    .hero h1{margin:0 0 10px;font-size:clamp(28px,4.2vw,44px);line-height:1.1}
+    .hero{margin:40px 0;padding:26px;border:1px solid var(--border);background:linear-gradient(180deg,var(--panel),#0a1324);border-radius:18px}
+    .hero h1{margin:0 0 8px;font-size:clamp(28px,4.2vw,44px);line-height:1.1}
     .hero p{margin:0;color:var(--muted);font-size:clamp(14px,2.3vw,18px)}
     .cta{margin-top:18px;display:flex;gap:12px;flex-wrap:wrap}
-    .btn{background:linear-gradient(90deg,var(--brand),var(--brand-2));color:#052e16;border:none;border-radius:12px;padding:12px 16px;font-weight:800;text-decoration:none;display:inline-block}
-    .btn.outline{background:transparent;border:1px solid #1f2937;color:var(--text)}
+    .btn{background:linear-gradient(90deg,var(--brand),var(--brand2));color:#052e16;border:none;border-radius:12px;padding:12px 16px;font-weight:800;text-decoration:none;display:inline-block}
+    .btn.outline{background:transparent;border:1px solid var(--border);color:var(--text)}
     .grid{display:grid;grid-template-columns:1fr;gap:14px;margin:24px 0}
     @media(min-width:720px){.grid{grid-template-columns:repeat(4,1fr)}}
-    .card{background:linear-gradient(180deg,#0a1223,#0a1120);border:1px solid #1f2937;border-radius:16px;padding:16px;min-height:130px;display:flex;flex-direction:column;justify-content:space-between}
-    .tag{font-size:12px;color:#0ea5e9;background:#0b1220;border:1px solid #1f2937;padding:4px 8px;border-radius:999px;width:max-content}
+    .card{background:linear-gradient(180deg,#0a1223,#0a1120);border:1px solid var(--border);border-radius:16px;padding:16px;min-height:130px;display:flex;flex-direction:column;justify-content:space-between;text-decoration:none}
+    .tag{font-size:12px;color:#0ea5e9;background:#0b1220;border:1px solid var(--border);padding:4px 8px;border-radius:999px;width:max-content}
     .title{font-weight:700;margin-top:8px}
-    footer{margin:30px 0 10px;color:var(--muted);font-size:13px;text-align:center}
     .muted{color:var(--muted)}
+    .section-title{margin:28px 0 8px;font-weight:800}
+    .products{display:grid;grid-template-columns:1fr;gap:14px}
+    @media(min-width:720px){.products{grid-template-columns:repeat(3,1fr)}}
+    .pcard{background:#0b1021;border:1px solid var(--border);border-radius:14px;padding:14px;text-align:left}
+    .pname{font-weight:700}
+    .ptags{margin-top:6px;font-size:12px;color:var(--muted)}
+    footer{margin:34px 0 10px;color:var(--muted);font-size:13px;text-align:center}
   </style>
 </head>
 <body>
@@ -54,7 +66,7 @@ PBW_HTML = """
 
     <section class="hero">
       <h1>Curated products & ideas, powered by AI.</h1>
-      <p>We research health, lifestyle, tech and eco products — then publish the best picks with honest, useful summaries.</p>
+      <p>We research health, lifestyle, tech and eco products—then publish the best picks with honest, useful summaries.</p>
       <div class="cta">
         <a class="btn" href="#categories">Explore categories</a>
         <a class="btn outline" href="mailto:oletom@dinboliggc.com">Contact</a>
@@ -92,6 +104,25 @@ PBW_HTML = """
       </a>
     </section>
 
+    <h3 class="section-title">Featured (placeholders)</h3>
+    <section class="products">
+      <div class="pcard">
+        <div class="pname">Example Product A</div>
+        <div class="muted">Short, honest summary about why it’s good.</div>
+        <div class="ptags">#health #skincare</div>
+      </div>
+      <div class="pcard">
+        <div class="pname">Example Product B</div>
+        <div class="muted">One-liner value prop to test layout.</div>
+        <div class="ptags">#tech #gadget</div>
+      </div>
+      <div class="pcard">
+        <div class="pname">Example Product C</div>
+        <div class="muted">Sustainable pick placeholder for launch.</div>
+        <div class="ptags">#eco</div>
+      </div>
+    </section>
+
     <footer>
       © <span id="y"></span> PureBloomWorld — Built with ❤️ + AI · <span class="muted">v1</span>
     </footer>
@@ -104,4 +135,4 @@ PBW_HTML = """
 
 @router.get("/", response_class=HTMLResponse)
 async def homepage():
-    return HTMLResponse(content=PBW_HTML, status_code=200)
+  return HTMLResponse(content=PBW_HTML, status_code=200)
