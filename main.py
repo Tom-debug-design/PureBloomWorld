@@ -1,14 +1,14 @@
 # main.py
 """
-PureBloomWorld Agent v1 (mobile‑friendly, Railway‑ready)
+PureBloomWorld Agent v1 (Railway-ready, mobile-friendly)
 
 Hva den gjør:
-- Sender startup‑ping til Discord når appen starter
-- Sender heartbeat hver N minutter (default 60)
-- Eksponerer /healthz for Railway (OK hvis siste ping var < 2*interval)
-- Minimal, robust og lett å utvide
+- Startup-ping til Discord
+- Heartbeat hver N minutter (ENV: HEARTBEAT_MINUTES)
+- /healthz-endpoint
+- Serverer forsiden via site_routes.py (router)
 
-Krever env vars:
+ENV-vars:
 - DISCORD_WEBHOOK   (obligatorisk)
 - SERVICE_NAME      (default: purebloomworld-agent)
 - ENV               (default: prod)
@@ -20,10 +20,11 @@ import asyncio
 import json
 import time
 from datetime import datetime, timezone
-from site import router as site_router
+
 import httpx
 from fastapi import FastAPI, Response
 from fastapi.responses import JSONResponse
+from site_routes import router as site_router  # <— HTML-forsiden
 
 # ---------- Config ----------
 SERVICE_NAME = os.getenv("SERVICE_NAME", "purebloomworld-agent")
@@ -37,7 +38,7 @@ _last_heartbeat_ts = 0.0
 _shutdown = asyncio.Event()
 
 app = FastAPI(title="PureBloomWorld Agent", version="1.0.0")
-app.include_router(site_router)
+app.include_router(site_router)  # koble inn forsiden
 
 # ---------- Utils ----------
 def now_iso() -> str:
@@ -95,7 +96,6 @@ async def heartbeat_loop():
         try:
             await asyncio.wait_for(_shutdown.wait(), timeout=interval)
         except asyncio.TimeoutError:
-            # time to send a heartbeat
             ok = await post_discord(fmt_heartbeat(), username="PBW Agent")
             if ok:
                 _last_heartbeat_ts = time.time()
@@ -122,14 +122,6 @@ async def healthz():
     return JSONResponse(data, status_code=status)
 
 
-@app.get("/")
-async def root():
-    return Response(
-        content=f"{SERVICE_NAME} is running ({ENV}) - {now_iso()}",
-        media_type="text/plain",
-    )
-
-
 # ---------- Lifespan ----------
 @app.on_event("startup")
 async def on_startup():
@@ -145,8 +137,6 @@ async def on_shutdown():
 
 # ---------- Local dev (optional) ----------
 if __name__ == "__main__":
-    # Only used if you run `python main.py` locally.
     import uvicorn
-
     port = int(os.getenv("PORT", "8000"))
     uvicorn.run("main:app", host="0.0.0.0", port=port, reload=False)
