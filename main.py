@@ -20,7 +20,7 @@ import asyncio
 import json
 import time
 from datetime import datetime, timezone
-
+from site import router as site_router
 import httpx
 from fastapi import FastAPI, Response
 from fastapi.responses import JSONResponse
@@ -37,7 +37,7 @@ _last_heartbeat_ts = 0.0
 _shutdown = asyncio.Event()
 
 app = FastAPI(title="PureBloomWorld Agent", version="1.0.0")
-
+app.include_router(site_router)
 
 # ---------- Utils ----------
 def now_iso() -> str:
