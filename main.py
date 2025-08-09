@@ -1,155 +1,151 @@
-# main.py
 """
-PureBloomWorld Agent v1.1 (Railway-ready, mobile-friendly)
+PureBloomWorld Agent
 
-Hva den gjør:
-- Startup-ping til Discord
-- Heartbeat hver N minutter (ENV: HEARTBEAT_MINUTES)
-- /healthz-endpoint
-- Serverer forsiden via site_routes.py (router)
-- Daglig idé-drop kl. 08:00 Europe/Oslo (3 produkt + 3 artikkel)
+- Startup-ping til Discord (hvis webhook er satt)
+- Heartbeat hver N min (ENV: HEARTBEAT_MINUTES, default 60)
+- /healthz
+- Forside/produkter via site_routes.py
+- Daglig idé-drop kl. 08:00 Europe/Oslo (idea_jobs)
 - Manuell trigger: GET /trigger/ideas
+- GitHub autopush: GET /ops/push-test → lager pbw_logs/ping-*.txt i repoet
 
-ENV-vars:
-- DISCORD_WEBHOOK   (obligatorisk)
-- SERVICE_NAME      (default: purebloomworld-agent)
-- ENV               (default: prod)
+ENV:
+- DISCORD_WEBHOOK  (valgfri – uten den hopper vi over Discord-ping)
+- SERVICE_NAME     (default: purebloomworld-agent)
+- ENV              (default: prod)
 - HEARTBEAT_MINUTES (default: 60)
+
+GitHub (for autopush):
+- GH_TOKEN   (PAT med 'repo')
+- GH_OWNER   (eks: Tom-debug-design)
+- GH_REPO    (eks: PureBloomWorld)
+- GH_BRANCH  (eks: main)
 """
 
 import os
 import asyncio
-import time
 from datetime import datetime, timezone
 
 import httpx
-from fastapi import FastAPI, Response
+from fastapi import FastAPI, Response, HTTPException
 from fastapi.responses import JSONResponse
+
 from site_routes import router as site_router
 from idea_jobs import daily_ideas_scheduler, compose_idea_message
-from gh_push import router as gh_router
-app.include_router(gh_router)
-# ---------- Config ----------
+
+# --------- Config ---------
 SERVICE_NAME = os.getenv("SERVICE_NAME", "purebloomworld-agent")
 ENV = os.getenv("ENV", "prod")
 HEARTBEAT_MINUTES = int(os.getenv("HEARTBEAT_MINUTES", "60"))
 DISCORD_WEBHOOK = os.getenv("DISCORD_WEBHOOK", "").strip()
 
-# internal state
-STARTED_AT = datetime.now(timezone.utc)
-_last_heartbeat_ts = 0.0
-_shutdown = asyncio.Event()
+# GitHub env (autopush)
+GH_TOKEN  = os.getenv("GH_TOKEN", "").strip()
+GH_OWNER  = os.getenv("GH_OWNER", "").strip()
+GH_REPO   = os.getenv("GH_REPO", "").strip()
+GH_BRANCH = os.getenv("GH_BRANCH", "main").strip()
 
-app = FastAPI(title="PureBloomWorld Agent", version="1.1.0")
-app.include_router(site_router)  # koble inn forsiden
+# --------- App ---------
+app = FastAPI(title="PureBloomWorld Agent", version="1.0.0")
+app.include_router(site_router)
 
-# ---------- Utils ----------
-def now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds")
-
-
-async def post_discord(message: str, username: str = "PBW Agent") -> bool:
-    """Send a simple message to Discord webhook. Returns True on success."""
+# --------- Discord util ---------
+async def send_discord_message(content: str):
+    """Sender melding til Discord hvis webhook finnes (ikke crash ved feil)."""
     if not DISCORD_WEBHOOK:
-        print("[WARN] DISCORD_WEBHOOK is missing.")
-        return False
+        print("⚠️  Ingen DISCORD_WEBHOOK satt – hopper over Discord-ping.")
+        return
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            await client.post(DISCORD_WEBHOOK, json={"content": content})
+    except Exception as e:
+        print(f"❌ Feil ved sending til Discord: {e}")
 
-    payload = {"content": message, "username": username}
-    timeout = httpx.Timeout(10.0, connect=10.0)
-    async with httpx.AsyncClient(timeout=timeout) as client:
-        # tiny retry/backoff: 3 tries (0.5s, 1s)
-        for attempt in range(3):
-            try:
-                r = await client.post(DISCORD_WEBHOOK, json=payload)
-                if r.status_code < 300:
-                    return True
-                else:
-                    print(f"[WARN] Discord status {r.status_code}: {r.text}")
-            except Exception as e:
-                print(f"[WARN] Discord error: {e}")
-            await asyncio.sleep(0.5 * (attempt + 1))
-    return False
-
-
-def fmt_startup() -> str:
-    return (
-        f"✅ **Startup** `{SERVICE_NAME}` ({ENV})\n"
-        f"• time: {now_iso()}\n"
-        f"• heartbeat: every {HEARTBEAT_MINUTES} min\n"
+# --------- Startup/Heartbeat ---------
+@app.on_event("startup")
+async def startup_event():
+    await send_discord_message(
+        f"✅ Startup {SERVICE_NAME} ({ENV})\n"
+        f"• time: {datetime.now(timezone.utc).isoformat(timespec='seconds')}\n"
+        f"• heartbeat: every {HEARTBEAT_MINUTES} min"
     )
+    asyncio.create_task(heartbeat_loop())
+    asyncio.create_task(daily_ideas_scheduler())
 
-
-def fmt_heartbeat() -> str:
-    return (
-        f"🫀 **Heartbeat** `{SERVICE_NAME}` ({ENV})\n"
-        f"• time: {now_iso()}\n"
-        f"• uptime_min: {int((time.time()-STARTED_AT.timestamp())/60)}\n"
-    )
-
-
-# ---------- Background tasks ----------
 async def heartbeat_loop():
-    global _last_heartbeat_ts
-    # initial startup ping
-    await post_discord(fmt_startup(), username="PBW Agent")
-    _last_heartbeat_ts = time.time()
+    while True:
+        await asyncio.sleep(HEARTBEAT_MINUTES * 60)
+        await send_discord_message(
+            f"🫀 Heartbeat {SERVICE_NAME} ({ENV})\n"
+            f"• time: {datetime.now(timezone.utc).isoformat(timespec='seconds')}"
+        )
 
-    interval = max(1, HEARTBEAT_MINUTES) * 60
-    while not _shutdown.is_set():
-        try:
-            await asyncio.wait_for(_shutdown.wait(), timeout=interval)
-        except asyncio.TimeoutError:
-            ok = await post_discord(fmt_heartbeat(), username="PBW Agent")
-            if ok:
-                _last_heartbeat_ts = time.time()
-
-
-# ---------- FastAPI endpoints ----------
+# --------- Health ---------
 @app.get("/healthz")
-async def healthz():
-    # healthy if last heartbeat < 2 intervals ago
-    interval = max(1, HEARTBEAT_MINUTES) * 60
-    age = time.time() - _last_heartbeat_ts if _last_heartbeat_ts else 0
-    healthy = True if _last_heartbeat_ts == 0 or age < (2 * interval + 10) else False
-    data = {
+async def health_check():
+    ok = True
+    return JSONResponse({
+        "healthy": ok,
         "service": SERVICE_NAME,
         "env": ENV,
-        "started_at": STARTED_AT.isoformat(timespec="seconds"),
-        "last_heartbeat_ts": _last_heartbeat_ts,
-        "last_heartbeat_age_sec": int(age),
-        "heartbeat_minutes": HEARTBEAT_MINUTES,
-        "healthy": healthy,
-        "time": now_iso(),
-    }
-    status = 200 if healthy else 503
-    return JSONResponse(data, status_code=status)
+        "has_webhook": bool(DISCORD_WEBHOOK),
+        "has_github": bool(GH_TOKEN and GH_OWNER and GH_REPO),
+    })
 
-
+# --------- Manual ideas trigger ---------
 @app.get("/trigger/ideas")
 async def trigger_ideas():
-    """Manuell idé-drop (for testing)."""
     msg = compose_idea_message()
-    await post_discord(msg, username="PBW Ideas")
-    return Response(content="Ideas sent", media_type="text/plain")
+    await send_discord_message(msg)
+    return {"status": "sent", "message": msg}
 
+# =========================
+# GitHub autopush (Contents API)
+# =========================
 
-# ---------- Lifespan ----------
-@app.on_event("startup")
-async def on_startup():
-    asyncio.create_task(heartbeat_loop())
-    # daglig idé-jobb
-    asyncio.create_task(daily_ideas_scheduler(lambda m: post_discord(m, username="PBW Ideas")))
-    print(f"[START] {SERVICE_NAME} ({ENV}) at {now_iso()}")
+def _gh_headers():
+    if not GH_TOKEN:
+        raise RuntimeError("GH_TOKEN missing")
+    return {
+        "Authorization": f"Bearer {GH_TOKEN}",
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
 
+async def _gh_get_sha(path: str):
+    url = f"https://api.github.com/repos/{GH_OWNER}/{GH_REPO}/contents/{path}?ref={GH_BRANCH}"
+    async with httpx.AsyncClient(timeout=10) as c:
+        r = await c.get(url, headers=_gh_headers())
+        if r.status_code == 200:
+            return r.json().get("sha")
+        if r.status_code == 404:
+            return None
+        raise HTTPException(status_code=500, detail=f"GitHub GET failed: {r.text}")
 
-@app.on_event("shutdown")
-async def on_shutdown():
-    _shutdown.set()
-    print(f"[STOP] {SERVICE_NAME} ({ENV}) at {now_iso()}")
+async def gh_put_file(path: str, text: str, message: str):
+    import base64
+    sha = await _gh_get_sha(path)
+    payload = {
+        "message": message,
+        "content": base64.b64encode(text.encode("utf-8")).decode("ascii"),
+        "branch": GH_BRANCH,
+        **({"sha": sha} if sha else {}),
+    }
+    url = f"https://api.github.com/repos/{GH_OWNER}/{GH_REPO}/contents/{path}"
+    async with httpx.AsyncClient(timeout=20) as c:
+        r = await c.put(url, headers=_gh_headers(), json=payload)
+        if r.status_code not in (200, 201):
+            raise HTTPException(status_code=500, detail=f"GitHub PUT failed: {r.text}")
+        return r.json()
 
-
-# ---------- Local dev (optional) ----------
-if __name__ == "__main__":
-    import uvicorn
-    port = int(os.getenv("PORT", "8000"))
-    uvicorn.run("main:app", host="0.0.0.0", port=port, reload=False)
+@app.get("/ops/push-test")
+async def push_test():
+    """Oppretter pbw_logs/ping-YYYYmmdd-HHMMSS.txt i repoet."""
+    if not (GH_TOKEN and GH_OWNER and GH_REPO):
+        raise HTTPException(status_code=400, detail="Missing GH_* env vars")
+    ts = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    path = f"pbw_logs/ping-{ts}.txt"
+    text = f"PBW agent ping at {ts}Z\n"
+    await gh_put_file(path, text, f"PBW: ping {ts}")
+    await send_discord_message(f"📤 GitHub push OK: `{path}`")
+    return Response(content=f"Committed {path}\n", media_type="text/plain")
