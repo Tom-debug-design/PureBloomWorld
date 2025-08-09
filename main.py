@@ -1,12 +1,14 @@
 # main.py
 """
-PureBloomWorld Agent v1 (Railway-ready, mobile-friendly)
+PureBloomWorld Agent v1.1 (Railway-ready, mobile-friendly)
 
 Hva den gjør:
 - Startup-ping til Discord
 - Heartbeat hver N minutter (ENV: HEARTBEAT_MINUTES)
 - /healthz-endpoint
 - Serverer forsiden via site_routes.py (router)
+- Daglig idé-drop kl. 08:00 Europe/Oslo (3 produkt + 3 artikkel)
+- Manuell trigger: GET /trigger/ideas
 
 ENV-vars:
 - DISCORD_WEBHOOK   (obligatorisk)
@@ -17,14 +19,14 @@ ENV-vars:
 
 import os
 import asyncio
-import json
 import time
 from datetime import datetime, timezone
 
 import httpx
 from fastapi import FastAPI, Response
 from fastapi.responses import JSONResponse
-from site_routes import router as site_router  # <— HTML-forsiden
+from site_routes import router as site_router
+from idea_jobs import daily_ideas_scheduler, compose_idea_message
 
 # ---------- Config ----------
 SERVICE_NAME = os.getenv("SERVICE_NAME", "purebloomworld-agent")
@@ -37,7 +39,7 @@ STARTED_AT = datetime.now(timezone.utc)
 _last_heartbeat_ts = 0.0
 _shutdown = asyncio.Event()
 
-app = FastAPI(title="PureBloomWorld Agent", version="1.0.0")
+app = FastAPI(title="PureBloomWorld Agent", version="1.1.0")
 app.include_router(site_router)  # koble inn forsiden
 
 # ---------- Utils ----------
@@ -122,10 +124,20 @@ async def healthz():
     return JSONResponse(data, status_code=status)
 
 
+@app.get("/trigger/ideas")
+async def trigger_ideas():
+    """Manuell idé-drop (for testing)."""
+    msg = compose_idea_message()
+    await post_discord(msg, username="PBW Ideas")
+    return Response(content="Ideas sent", media_type="text/plain")
+
+
 # ---------- Lifespan ----------
 @app.on_event("startup")
 async def on_startup():
     asyncio.create_task(heartbeat_loop())
+    # daglig idé-jobb
+    asyncio.create_task(daily_ideas_scheduler(lambda m: post_discord(m, username="PBW Ideas")))
     print(f"[START] {SERVICE_NAME} ({ENV}) at {now_iso()}")
 
 
