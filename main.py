@@ -5,14 +5,14 @@ PureBloomWorld Agent
 - Heartbeat hver N min (ENV: HEARTBEAT_MINUTES, default 60)
 - /healthz
 - Forside/produkter via site_routes.py
-- Daglig idé-drop kl. 08:00 Europe/Oslo (idea_jobs)
+- Daglig idé-drop kl. 08:00 Europe/Oslo (idea_jobs)  ← bruker post_func=send_discord_message
 - Manuell trigger: GET /trigger/ideas
 - GitHub autopush: GET /ops/push-test → lager pbw_logs/ping-*.txt i repoet
 
 ENV:
-- DISCORD_WEBHOOK  (valgfri – uten den hopper vi over Discord-ping)
-- SERVICE_NAME     (default: purebloomworld-agent)
-- ENV              (default: prod)
+- DISCORD_WEBHOOK   (valgfri – uten den hopper vi over Discord-ping)
+- SERVICE_NAME      (default: purebloomworld-agent)
+- ENV               (default: prod)
 - HEARTBEAT_MINUTES (default: 60)
 
 GitHub (for autopush):
@@ -70,11 +70,12 @@ async def startup_event():
         f"• heartbeat: every {HEARTBEAT_MINUTES} min"
     )
     asyncio.create_task(heartbeat_loop())
-    asyncio.create_task(daily_ideas_scheduler())
+    # Viktig: send inn post_func for å unngå crash
+    asyncio.create_task(daily_ideas_scheduler(post_func=send_discord_message))
 
 async def heartbeat_loop():
     while True:
-        await asyncio.sleep(HEARTBEAT_MINUTES * 60)
+        await asyncio.sleep(max(1, HEARTBEAT_MINUTES) * 60)
         await send_discord_message(
             f"🫀 Heartbeat {SERVICE_NAME} ({ENV})\n"
             f"• time: {datetime.now(timezone.utc).isoformat(timespec='seconds')}"
