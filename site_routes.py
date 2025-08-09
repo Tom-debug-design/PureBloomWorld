@@ -10,12 +10,10 @@ from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse
 
 router = APIRouter()
 
-# Hent Discord-webhook fra env (samme som heartbeat)
 DISCORD_WEBHOOK = os.getenv("DISCORD_WEBHOOK", "").strip()
 SERVICE_NAME = os.getenv("SERVICE_NAME", "purebloomworld-agent")
 
-# ===== Dummy produkter (byttes senere av Top Sellers Engine) =====
-# url = ekstern affiliate-URL (placeholder nå)
+# Dummy-produkter – byttes senere av Top Sellers Engine / affiliate-URLer
 PRODUCTS: List[Dict] = [
     {
         "id": "p1",
@@ -67,10 +65,7 @@ PRODUCTS: List[Dict] = [
     },
 ]
 
-
-# ===== Utilities =====
 async def post_discord(message: str, username: str = "PBW Clicks") -> bool:
-    """Send a small log message to Discord; safe‑fail if no webhook."""
     if not DISCORD_WEBHOOK:
         return False
     payload = {"content": message, "username": username}
@@ -81,7 +76,6 @@ async def post_discord(message: str, username: str = "PBW Clicks") -> bool:
             return r.status_code < 300
         except Exception:
             return False
-
 
 def page_shell(inner_html: str, title="PureBloomWorld") -> str:
     return f"""<!doctype html>
@@ -131,13 +125,10 @@ footer{{margin:34px 0 10px;color:var(--muted);font-size:13px;text-align:center}}
   <script>document.getElementById('y').textContent=new Date().getFullYear()</script>
 </body></html>"""
 
-
-# ===== Pages =====
 @router.get("/", response_class=HTMLResponse)
 def homepage():
     cards = []
     for p in PRODUCTS:
-        # lenke går via /out/{id} og åpner i ny fane hos bruker
         cards.append(f"""
           <div class="card">
             <img src="{p['img']}" alt="{p['name']}"/>
@@ -160,7 +151,6 @@ def homepage():
     """
     return HTMLResponse(page_shell(inner, "PureBloomWorld"))
 
-
 @router.get("/about", response_class=HTMLResponse)
 def about():
     inner = """
@@ -170,7 +160,6 @@ def about():
     </section>
     """
     return HTMLResponse(page_shell(inner, "About — PureBloomWorld"))
-
 
 @router.get("/contact", response_class=HTMLResponse)
 def contact():
@@ -183,33 +172,26 @@ def contact():
     """
     return HTMLResponse(page_shell(inner, "Contact — PureBloomWorld"))
 
-
-# ===== Click‑through with Discord logging =====
 def _find_product(pid: str) -> Dict:
     for p in PRODUCTS:
         if p["id"] == pid:
             return p
     raise KeyError(pid)
 
-
 @router.get("/out/{pid}")
 async def out_redirect(pid: str):
-    """Redirects to external URL in a new tab; logs click to Discord."""
+    """Redirecter til ekstern URL i ny fane + logger klikk til Discord."""
     try:
         p = _find_product(pid)
     except KeyError:
         raise HTTPException(status_code=404, detail="Product not found")
 
-    # Discord‑logg (fire‑and‑forget)
     ts = datetime.now(timezone.utc).isoformat(timespec="seconds")
     msg = f"🔗 Click → **{p['name']}** ({pid})  •  {ts}  •  via `{SERVICE_NAME}`"
     asyncio.create_task(post_discord(msg))
 
-    # 307 temporary redirect (bevarer metode)
     return RedirectResponse(url=p["url"], status_code=307)
 
-
-# ===== Simple JSON feed (kan brukes av agent senere) =====
 @router.get("/api/products")
 def api_products():
     return JSONResponse({"products": PRODUCTS})
