@@ -27,7 +27,8 @@ from fastapi import FastAPI, Response
 from fastapi.responses import JSONResponse
 from site_routes import router as site_router
 from idea_jobs import daily_ideas_scheduler, compose_idea_message
-
+from gh_push import router as gh_router
+app.include_router(gh_router)
 # ---------- Config ----------
 SERVICE_NAME = os.getenv("SERVICE_NAME", "purebloomworld-agent")
 ENV = os.getenv("ENV", "prod")
