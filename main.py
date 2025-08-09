@@ -2,18 +2,20 @@
 PureBloomWorld Agent
 
 - Startup-ping til Discord (hvis webhook er satt)
-- Heartbeat hver N min (ENV: HEARTBEAT_MINUTES, default 60)
-- /healthz
+- Heartbeat hver N min (ENV: HEARTBEAT_MINUTES; min 1)
+- /healthz og /env
 - Forside/produkter via site_routes.py
-- Daglig idé-drop kl. 08:00 Europe/Oslo (idea_jobs)  ← bruker post_func=send_discord_message
+- Daglig idé-drop kl. 08:00 Europe/Oslo (idea_jobs)  ← post_func=send_discord_message
 - Manuell trigger: GET /trigger/ideas
-- GitHub autopush: GET /ops/push-test → lager pbw_logs/ping-*.txt i repoet
+- GitHub autopush:
+    • GET /ops/push-test   → pbw_logs/ping-*.txt
+    • POST /ops/push       → JSON {path, content, message}
 
 ENV:
 - DISCORD_WEBHOOK   (valgfri – uten den hopper vi over Discord-ping)
 - SERVICE_NAME      (default: purebloomworld-agent)
 - ENV               (default: prod)
-- HEARTBEAT_MINUTES (default: 60)
+- HEARTBEAT_MINUTES (default: 60, men aldri < 1)
 
 GitHub (for autopush):
 - GH_TOKEN   (PAT med 'repo')
@@ -25,9 +27,10 @@ GitHub (for autopush):
 import os
 import asyncio
 from datetime import datetime, timezone
+import base64
 
 import httpx
-from fastapi import FastAPI, Response, HTTPException
+from fastapi import FastAPI, Response, HTTPException, Body
 from fastapi.responses import JSONResponse
 
 from site_routes import router as site_router
@@ -36,7 +39,14 @@ from idea_jobs import daily_ideas_scheduler, compose_idea_message
 # --------- Config ---------
 SERVICE_NAME = os.getenv("SERVICE_NAME", "purebloomworld-agent")
 ENV = os.getenv("ENV", "prod")
-HEARTBEAT_MINUTES = int(os.getenv("HEARTBEAT_MINUTES", "60"))
+
+# Fallback + min 1 minutt uansett
+try:
+    _hb_raw = os.getenv("HEARTBEAT_MINUTES", "60")
+    HEARTBEAT_MINUTES = max(1, int(_hb_raw))
+except Exception:
+    HEARTBEAT_MINUTES = 1
+
 DISCORD_WEBHOOK = os.getenv("DISCORD_WEBHOOK", "").strip()
 
 # GitHub env (autopush)
@@ -46,8 +56,11 @@ GH_REPO   = os.getenv("GH_REPO", "").strip()
 GH_BRANCH = os.getenv("GH_BRANCH", "main").strip()
 
 # --------- App ---------
-app = FastAPI(title="PureBloomWorld Agent", version="1.0.0")
+app = FastAPI(title="PureBloomWorld Agent", version="1.1.0")
 app.include_router(site_router)
+
+# intern vakt for å unngå dobbelt-planlegging
+_started = False
 
 # --------- Discord util ---------
 async def send_discord_message(content: str):
@@ -64,34 +77,54 @@ async def send_discord_message(content: str):
 # --------- Startup/Heartbeat ---------
 @app.on_event("startup")
 async def startup_event():
+    global _started
+    if _started:
+        # Kan skje ved varme redeploys – ikke planlegg nye tasks
+        return
+    _started = True
+
     await send_discord_message(
         f"✅ Startup {SERVICE_NAME} ({ENV})\n"
         f"• time: {datetime.now(timezone.utc).isoformat(timespec='seconds')}\n"
         f"• heartbeat: every {HEARTBEAT_MINUTES} min"
     )
+
     asyncio.create_task(heartbeat_loop())
-    # Viktig: send inn post_func for å unngå crash
     asyncio.create_task(daily_ideas_scheduler(post_func=send_discord_message))
 
 async def heartbeat_loop():
     while True:
-        await asyncio.sleep(max(1, HEARTBEAT_MINUTES) * 60)
+        await asyncio.sleep(HEARTBEAT_MINUTES * 60)
         await send_discord_message(
             f"🫀 Heartbeat {SERVICE_NAME} ({ENV})\n"
             f"• time: {datetime.now(timezone.utc).isoformat(timespec='seconds')}"
         )
 
-# --------- Health ---------
+# --------- Health & Env ---------
 @app.get("/healthz")
 async def health_check():
-    ok = True
     return JSONResponse({
-        "healthy": ok,
+        "healthy": True,
         "service": SERVICE_NAME,
         "env": ENV,
+        "heartbeat_minutes": HEARTBEAT_MINUTES,
         "has_webhook": bool(DISCORD_WEBHOOK),
         "has_github": bool(GH_TOKEN and GH_OWNER and GH_REPO),
     })
+
+@app.get("/env")
+async def env_view():
+    # Viser kun ufarlige verdier
+    return {
+        "SERVICE_NAME": SERVICE_NAME,
+        "ENV": ENV,
+        "HEARTBEAT_MINUTES": HEARTBEAT_MINUTES,
+        "GH_OWNER": GH_OWNER,
+        "GH_REPO": GH_REPO,
+        "GH_BRANCH": GH_BRANCH,
+        "DISCORD_WEBHOOK_set": bool(DISCORD_WEBHOOK),
+        "GH_TOKEN_set": bool(GH_TOKEN),
+    }
 
 # --------- Manual ideas trigger ---------
 @app.get("/trigger/ideas")
@@ -124,7 +157,6 @@ async def _gh_get_sha(path: str):
         raise HTTPException(status_code=500, detail=f"GitHub GET failed: {r.text}")
 
 async def gh_put_file(path: str, text: str, message: str):
-    import base64
     sha = await _gh_get_sha(path)
     payload = {
         "message": message,
@@ -139,6 +171,10 @@ async def gh_put_file(path: str, text: str, message: str):
             raise HTTPException(status_code=500, detail=f"GitHub PUT failed: {r.text}")
         return r.json()
 
+@app.get("/ops/ping")
+async def ops_ping():
+    return {"pong": True, "ts": datetime.now(timezone.utc).isoformat(timespec="seconds")}
+
 @app.get("/ops/push-test")
 async def push_test():
     """Oppretter pbw_logs/ping-YYYYmmdd-HHMMSS.txt i repoet."""
@@ -150,3 +186,20 @@ async def push_test():
     await gh_put_file(path, text, f"PBW: ping {ts}")
     await send_discord_message(f"📤 GitHub push OK: `{path}`")
     return Response(content=f"Committed {path}\n", media_type="text/plain")
+
+@app.post("/ops/push")
+async def ops_push(
+    path: str = Body(..., embed=True),
+    content: str = Body(..., embed=True),
+    message: str = Body("PBW autopush", embed=True),
+):
+    """Generisk push-endpoint. Body:
+       { "path": "pbw_logs/custom.txt", "content": "hello", "message": "note" }
+    """
+    if not (GH_TOKEN and GH_OWNER and GH_REPO):
+        raise HTTPException(status_code=400, detail="Missing GH_* env vars")
+    if not path or ".." in path:
+        raise HTTPException(status_code=400, detail="Invalid path")
+    result = await gh_put_file(path, content, message)
+    await send_discord_message(f"📤 GitHub push OK: `{path}`")
+    return {"ok": True, "result": result}
