@@ -26,7 +26,7 @@ from fastapi.responses import JSONResponse
 
 from site_routes import router as site_router
 from gh_push import commit_file, timestamp
-
+from products import get_top_sellers
 # ---------- Config ----------
 SERVICE_NAME = os.getenv("SERVICE_NAME", "purebloomworld-agent")
 ENV = os.getenv("ENV", "prod")
