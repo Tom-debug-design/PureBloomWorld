@@ -1,59 +1,47 @@
 # gh_push.py
-import os, base64, asyncio
-from datetime import datetime, timezone
-import httpx
-from fastapi import APIRouter, Response, HTTPException
+import os, base64, httpx, time
 
-router = APIRouter()
+GH_TOKEN = os.getenv("GH_TOKEN") or os.getenv("GITHUB_TOKEN") or os.getenv("GH_PAT")
+GH_OWNER = os.getenv("GH_OWNER", "").strip()
+GH_REPO  = os.getenv("GH_REPO", "").strip()
+GH_BRANCH= os.getenv("GH_BRANCH", "main").strip()
 
-GH_TOKEN  = os.getenv("GH_TOKEN", "").strip()
-GH_OWNER  = os.getenv("GH_OWNER", "").strip()
-GH_REPO   = os.getenv("GH_REPO", "").strip()
-GH_BRANCH = os.getenv("GH_BRANCH", "main").strip()
+API = "https://api.github.com"
 
-API_BASE = "https://api.github.com"
-
-def _headers():
+def _gh_headers():
     if not GH_TOKEN:
-        raise RuntimeError("GH_TOKEN missing")
+        raise RuntimeError("Missing GH token (GH_TOKEN/GITHUB_TOKEN/GH_PAT).")
     return {
-        "Authorization": f"Bearer {GH_TOKEN}",
+        "Authorization": f"token {GH_TOKEN}",
         "Accept": "application/vnd.github+json",
         "X-GitHub-Api-Version": "2022-11-28",
+        "User-Agent": "pbw-agent"
     }
 
-async def _get_sha(path: str):
-    url = f"{API_BASE}/repos/{GH_OWNER}/{GH_REPO}/contents/{path}?ref={GH_BRANCH}"
-    async with httpx.AsyncClient(timeout=10) as c:
-        r = await c.get(url, headers=_headers())
-        if r.status_code == 200:
-            return r.json().get("sha")
-        if r.status_code == 404:
-            return None
-        raise HTTPException(status_code=500, detail=f"GitHub GET failed: {r.text}")
+def commit_file(path: str, content: str, message: str):
+    """
+    Upsert en enkel tekstfil til repoet.
+    """
+    if not (GH_OWNER and GH_REPO and GH_BRANCH):
+        raise RuntimeError("GH_OWNER/GH_REPO/GH_BRANCH must be set.")
 
-async def put_file(path: str, text: str, message: str):
-    sha = await _get_sha(path)
-    payload = {
-        "message": message,
-        "content": base64.b64encode(text.encode()).decode(),
-        "branch": GH_BRANCH,
-        **({"sha": sha} if sha else {}),
-    }
-    url = f"{API_BASE}/repos/{GH_OWNER}/{GH_REPO}/contents/{path}"
-    async with httpx.AsyncClient(timeout=15) as c:
-        r = await c.put(url, headers=_headers(), json=payload)
-        if r.status_code not in (200, 201):
-            raise HTTPException(status_code=500, detail=f"GitHub PUT failed: {r.text}")
-        return r.json()
+    url = f"{API}/repos/{GH_OWNER}/{GH_REPO}/contents/{path}"
+    with httpx.Client(timeout=30) as cx:
+        # Finn eksisterende sha (om fil finnes)
+        r = cx.get(url, params={"ref": GH_BRANCH}, headers=_gh_headers())
+        sha = r.json().get("sha") if r.status_code == 200 else None
 
-@router.get("/ops/push-test")
-async def push_test():
-    """Oppretter pbw_logs/ping-YYYYmmdd-HHMMSS.txt i repoet."""
-    if not (GH_TOKEN and GH_OWNER and GH_REPO):
-        raise HTTPException(status_code=400, detail="Missing GH_* env vars")
-    ts = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
-    path = f"pbw_logs/ping-{ts}.txt"
-    text = f"PBW agent ping at {ts}Z\n"
-    await put_file(path, text, f"PBW: ping {ts}")
-    return Response(content=f"Committed {path}\n", media_type="text/plain")
+        data = {
+            "message": message,
+            "content": base64.b64encode(content.encode("utf-8")).decode("ascii"),
+            "branch": GH_BRANCH
+        }
+        if sha: data["sha"] = sha
+
+        r2 = cx.put(url, json=data, headers=_gh_headers())
+        if r2.status_code not in (200,201):
+            raise RuntimeError(f"GitHub push failed: {r2.status_code} {r2.text}")
+    return True
+
+def timestamp():
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
