@@ -1,110 +1,167 @@
-# main.py — diagnostics v3
+"""
+PureBloomWorld Agent — stabil base
 
-import os, asyncio, json, hashlib
+Hva den gjør:
+- Startup-ping til Discord (+ ENV-dump light)
+- Heartbeat hver N minutter (ENV: HEARTBEAT_MINUTES, >0)
+- /healthz, /debug/ping
+- Manuell trigger: GET /trigger/topsellers (poster topp 5 fra mock-DB)
+- (Valgfritt) bakgrunnsloop for top-sellers hvert M min hvis TOPSELLER_ENABLE=true
+
+ENV (Railway):
+- DISCORD_WEBHOOK         (påkrevd)
+- SERVICE_NAME            (default: purebloomworld-agent)
+- HEARTBEAT_MINUTES       (default: 60)  # bruk 1 for rask test, ikke "00"
+- TOPSELLER_ENABLE        (default: false)
+- TOPSELLER_INTERVAL_MIN  (default: 60)
+- GH_TOKEN                (valgfri; kreves for commit)
+- GH_OWNER, GH_REPO, GH_BRANCH (kreves bare hvis GH_TOKEN satt)
+"""
+
+import os, asyncio, json
 from datetime import datetime, timezone
-
-print("=== LOADED main.py v3 ===")  # <- vises ved import
-
 import httpx
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 
-from site_routes import router as site_router
+# --- Lokal mock av produkter
 from products import get_top_sellers
-from gh_push import commit_file, timestamp
 
-def now_iso(): return datetime.now(timezone.utc).isoformat(timespec="seconds")
+app = FastAPI()
+UTC = timezone.utc
 
-SERVICE_NAME = os.getenv("SERVICE_NAME", "purebloomworld-agent")
-ENV = os.getenv("ENV", "prod")
-HEARTBEAT_MINUTES = int(os.getenv("HEARTBEAT_MINUTES", "60"))
-DISCORD_WEBHOOK = (os.getenv("DISCORD_WEBHOOK") or "").strip()
-TOPSELLER_ENABLE = (os.getenv("TOPSELLER_ENABLE", "false").lower() in ("1","true","yes"))
-TOPSELLER_INTERVAL = int(os.getenv("TOPSELLER_INTERVAL_MIN", "60"))
-GH_TOKEN  = (os.getenv("GH_TOKEN")  or "").strip()
-GH_OWNER  = (os.getenv("GH_OWNER")  or "").strip()
-GH_REPO   = (os.getenv("GH_REPO")   or "").strip()
-GH_BRANCH = (os.getenv("GH_BRANCH") or "main").strip()
+# -------- Config helpers --------
+def env_bool(name: str, default: bool=False) -> bool:
+    val = os.getenv(name, "").strip().lower()
+    if val in ("1","true","yes","y","on"): return True
+    if val in ("0","false","no","n","off"): return False
+    return default
 
-wh_hash = hashlib.sha1(DISCORD_WEBHOOK.encode()).hexdigest()[:8] if DISCORD_WEBHOOK else "MISSING"
-print(f"[CFG] SERVICE_NAME={SERVICE_NAME} ENV={ENV} HB={HEARTBEAT_MINUTES}m "
-      f"TOPSELLER={TOPSELLER_ENABLE}/{TOPSELLER_INTERVAL}m WH={wh_hash} "
-      f"GH={'OK' if GH_TOKEN and GH_OWNER and GH_REPO else 'MISSING'}")
-
-app = FastAPI(title="PureBloomWorld Agent", version="diag-3")
-app.include_router(site_router)
-
-_shutdown = asyncio.Event()
-
-async def post_discord(text: str):
-    if not DISCORD_WEBHOOK:
-        print(f"[DISCORD] webhook missing, skip: {text[:80]}...")
-        return False
+def env_int(name: str, default: int) -> int:
     try:
-        async with httpx.AsyncClient(timeout=15) as client:
-            r = await client.post(DISCORD_WEBHOOK, json={"content": text})
-            ok = 200 <= r.status_code < 300
-            print(f"[DISCORD] POST status={r.status_code} ok={ok} len={len(r.text)}")
-            if not ok:
-                print(f"[DISCORD] body: {r.text[:300]}")
-            return ok
-    except Exception as e:
-        print(f"[DISCORD] exception: {e}")
+        return int(os.getenv(name, "").strip() or default)
+    except Exception:
+        return default
+
+SERVICE_NAME = os.getenv("SERVICE_NAME", "purebloomworld-agent").strip()
+DISCORD_WEBHOOK = os.getenv("DISCORD_WEBHOOK", "").strip()
+HEARTBEAT_MINUTES = env_int("HEARTBEAT_MINUTES", 60)
+
+TOPSELLER_ENABLE = env_bool("TOPSELLER_ENABLE", False)
+TOPSELLER_INTERVAL_MIN = env_int("TOPSELLER_INTERVAL_MIN", 60)
+
+GH_TOKEN  = os.getenv("GH_TOKEN", "").strip()
+GH_OWNER  = os.getenv("GH_OWNER", "").strip()
+GH_REPO   = os.getenv("GH_REPO", "").strip()
+GH_BRANCH = os.getenv("GH_BRANCH", "main").strip()
+
+# -------- Discord helpers --------
+async def discord_send(message: str):
+    if not DISCORD_WEBHOOK:
+        return
+    payload = {"content": message}
+    async with httpx.AsyncClient(timeout=15) as client:
+        try:
+            await client.post(DISCORD_WEBHOOK, json=payload)
+        except Exception:
+            pass  # aldri crash appen pga Discord
+
+def ts() -> str:
+    return datetime.now(UTC).isoformat(timespec="seconds")
+
+# -------- GitHub commit (valgfritt) --------
+async def commit_list_to_github(filename: str, content: str) -> bool:
+    """
+    Oppretter/oppdaterer en fil i repo hvis GH_TOKEN/OWNER/REPO er satt.
+    Returnerer True ved suksess, ellers False. Ingen exceptions bobler opp.
+    """
+    if not (GH_TOKEN and GH_OWNER and GH_REPO and GH_BRANCH):
         return False
 
-async def heartbeat_loop():
-    await asyncio.sleep(1.0)
-    while not _shutdown.is_set():
-        await post_discord(f"💗 Heartbeat {SERVICE_NAME} ({ENV}) • {now_iso()} • every {HEARTBEAT_MINUTES} min")
+    api_url = f"https://api.github.com/repos/{GH_OWNER}/{GH_REPO}/contents/{filename}"
+    headers = {
+        "Authorization": f"token {GH_TOKEN}",
+        "Accept": "application/vnd.github+json",
+        "User-Agent": "PureBloomWorld-Agent"
+    }
+
+    import base64
+    b64 = base64.b64encode(content.encode("utf-8")).decode("utf-8")
+
+    async with httpx.AsyncClient(timeout=30, headers=headers) as client:
+        # Finn sha hvis fil finnes
+        sha = None
         try:
-            await asyncio.wait_for(_shutdown.wait(), timeout=max(1, HEARTBEAT_MINUTES)*60)
-        except asyncio.TimeoutError:
+            r_get = await client.get(api_url, params={"ref": GH_BRANCH})
+            if r_get.status_code == 200:
+                sha = r_get.json().get("sha")
+        except Exception:
             pass
+
+        data = {
+            "message": f"chore: update {filename} [{ts()}]",
+            "content": b64,
+            "branch": GH_BRANCH
+        }
+        if sha: data["sha"] = sha
+
+        try:
+            r_put = await client.put(api_url, json=data)
+            return r_put.status_code in (200,201)
+        except Exception:
+            return False
+
+# -------- Schedulers --------
+async def heartbeat_loop():
+    if HEARTBEAT_MINUTES <= 0:
+        return
+    while True:
+        await discord_send(f"💓 Heartbeat {SERVICE_NAME}\n• time: {ts()}\n• heartbeat: every {HEARTBEAT_MINUTES} min")
+        await asyncio.sleep(HEARTBEAT_MINUTES * 60)
 
 async def topseller_loop():
     if not TOPSELLER_ENABLE:
-        print("[TOPSELLER] disabled")
         return
-    print("[TOPSELLER] started")
-    await asyncio.sleep(2.0)
-    while not _shutdown.is_set():
-        try:
-            items = get_top_sellers()
-            top5 = ", ".join(i.title for i in items[:5])
-            await post_discord(f"🛒 Top sellers — 1. {top5}")
-            if GH_TOKEN and GH_OWNER and GH_REPO:
-                content = json.dumps([i.__dict__ for i in items], ensure_ascii=False, indent=2)
-                path = f"data/topsellers/{timestamp()}.json"
-                await commit_file(GH_OWNER, GH_REPO, GH_BRANCH, path, content, GH_TOKEN,
-                                  f"Top sellers {timestamp()} ({SERVICE_NAME})")
-                print("[TOPSELLER] committed to GitHub")
-            else:
-                print("[TOPSELLER] skip commit (missing GH env)")
-        except Exception as e:
-            print(f"[TOPSELLER] error: {e}")
-        try:
-            await asyncio.wait_for(_shutdown.wait(), timeout=max(5, TOPSELLER_INTERVAL)*60)
-        except asyncio.TimeoutError:
-            pass
+    # første run med en liten delay, deretter fast intervall
+    await asyncio.sleep(5)
+    while True:
+        await run_topsellers(post_to_discord=True, try_commit=True)
+        await asyncio.sleep(max(TOPSELLER_INTERVAL_MIN, 1) * 60)
 
+# -------- Core job --------
+async def run_topsellers(post_to_discord: bool, try_commit: bool):
+    items = get_top_sellers(limit=5)
+    line = "🛒 Top sellers (mock) — topp 5:\n" + \
+           "".join([f"{i+1}. {p['title']}\n" for i, p in enumerate(items)])
+    if post_to_discord:
+        await discord_send(line + "(full liste committes til GitHub)")
+    if try_commit:
+        if GH_TOKEN and GH_OWNER and GH_REPO:
+            full_json = json.dumps(items, indent=2, ensure_ascii=False)
+            ok = await commit_list_to_github("data/top_sellers.json", full_json)
+            if not ok:
+                await discord_send("⚠️ Klarte ikke å committe til GitHub (sjekk GH_* vars).")
+        else:
+            await discord_send("⚠️ Skipper GitHub-commit: GH_TOKEN/OWNER/REPO ikke satt.")
+
+# -------- FastAPI lifecycle & routes --------
 @app.on_event("startup")
-async def on_startup():
-    print(f"[STARTUP] firing at {now_iso()} (WH={wh_hash})")
-    await post_discord(f"✅ Startup {SERVICE_NAME} ({ENV}) • {now_iso()} • HB {HEARTBEAT_MINUTES}m")
+async def startup_event():
+    await discord_send(f"✅ Startup {SERVICE_NAME} (prod)\n• time: {ts()}\n• heartbeat: every {HEARTBEAT_MINUTES} min")
+    # start tasks
     asyncio.create_task(heartbeat_loop())
     asyncio.create_task(topseller_loop())
 
-@app.on_event("shutdown")
-async def on_shutdown():
-    print(f"[SHUTDOWN] at {now_iso()}")
-    _shutdown.set()
-    await post_discord(f"❗ Shutdown {SERVICE_NAME} • {now_iso()}")
-
 @app.get("/healthz")
 async def healthz():
-    return JSONResponse({"ok": True, "service": SERVICE_NAME, "env": ENV, "time": now_iso()})
+    return JSONResponse({"ok": True, "service": SERVICE_NAME, "time": ts()})
 
-@app.get("/test/discord")
-async def test_discord():
-    ok = await post_discord(f"🔧 Test {SERVICE_NAME} • {now_iso()}")
-    return {"sent": ok, "webhook_hash": wh_hash}
+@app.get("/debug/ping")
+async def debug_ping():
+    await discord_send(f"🔧 Debug ping fra {SERVICE_NAME} @ {ts()}")
+    return {"sent": True}
+
+@app.get("/trigger/topsellers")
+async def trigger_topsellers():
+    await run_topsellers(post_to_discord=True, try_commit=True)
+    return {"ok": True, "time": ts()}
